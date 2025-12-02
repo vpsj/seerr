@@ -12,6 +12,7 @@ import {
 } from '..';
 import type { NotificationAgent, NotificationPayload } from './agent';
 import { BaseAgent } from './agent';
+
 enum EmbedColors {
   DEFAULT = 0,
   AQUA = 1752220,
@@ -37,20 +38,23 @@ enum EmbedColors {
   LUMINOUS_VIVID_PINK = 16580705,
   DARK_VIVID_PINK = 12320855,
 }
+
 interface DiscordImageEmbed {
   url?: string;
   proxy_url?: string;
   height?: number;
   width?: number;
 }
+
 interface Field {
   name: string;
   value: string;
   inline?: boolean;
 }
+
 interface DiscordRichEmbed {
   title?: string;
-  type?: 'rich'; // Always rich for webhooks
+  type?: 'rich';
   description?: string;
   url?: string;
   timestamp?: string;
@@ -74,6 +78,7 @@ interface DiscordRichEmbed {
   };
   fields?: Field[];
 }
+
 interface DiscordWebhookPayload {
   embeds: DiscordRichEmbed[];
   username?: string;
@@ -86,21 +91,17 @@ interface DiscordWebhookPayload {
     users?: string[];
   };
 }
+
 class DiscordAgent
   extends BaseAgent<NotificationAgentDiscord>
   implements NotificationAgent
 {
   protected getSettings(): NotificationAgentDiscord {
-    if (this.settings) {
-      return this.settings;
-    }
-    const settings = getSettings();
-    return settings.notifications.agents.discord;
+    if (this.settings) return this.settings;
+    return getSettings().notifications.agents.discord;
   }
-  private getStatusLabel(
-    type: Notification,
-    payload: NotificationPayload
-  ): string {
+
+  private getStatusLabel(type: Notification, payload: NotificationPayload): string {
     if (payload.request) {
       switch (type) {
         case Notification.MEDIA_PENDING:
@@ -115,7 +116,9 @@ class DiscordAgent
         case Notification.MEDIA_FAILED:
           return 'Failed';
       }
-    } else if (payload.issue) {
+    }
+
+    if (payload.issue) {
       switch (type) {
         case Notification.ISSUE_CREATED:
         case Notification.ISSUE_REOPENED:
@@ -126,21 +129,58 @@ class DiscordAgent
           return 'Issue Resolved';
       }
     }
+
     return '';
   }
-  public buildEmbed(
-    type: Notification,
-    payload: NotificationPayload
-  ): DiscordRichEmbed {
+
+  /** FIX — Correct media title extraction for Seerr develop */
+  private getMediaTitle(payload: NotificationPayload): string {
+    if (!payload.media) return 'Unknown';
+
+    const info = (payload.media as any).mediaInfo;
+
+    if (payload.media.mediaType === 'movie') {
+      return (
+        info?.title ||
+        info?.originalTitle ||
+        payload.subject ||
+        'Unknown'
+      );
+    }
+
+    // TV series
+    return (
+      info?.name ||
+      info?.originalName ||
+      payload.subject ||
+      'Unknown'
+    );
+  }
+
+  /** FIX — Correct year for movie + series */
+  private getMediaYear(payload: NotificationPayload): string {
+    const info = payload.media?.mediaInfo;
+    if (!info) return '';
+
+    const date = info.releaseDate || info.firstAirDate;
+    if (!date) return '';
+
+    const yr = new Date(date).getFullYear();
+    return isNaN(yr) ? '' : `(${yr})`;
+  }
+
+  public buildEmbed(type: Notification, payload: NotificationPayload): DiscordRichEmbed {
     const { applicationUrl } = getSettings().main;
     let color = EmbedColors.DARK_PURPLE;
     const fields: Field[] = [];
+
     if (payload.request) {
       fields.push({
         name: 'Requested By',
         value: payload.request.requestedBy.displayName,
         inline: true,
       });
+
       switch (type) {
         case Notification.MEDIA_PENDING:
           color = EmbedColors.ORANGE;
@@ -157,153 +197,104 @@ class DiscordAgent
           color = EmbedColors.RED;
           break;
       }
+
       fields.push({
         name: 'Request Status',
         value: this.getStatusLabel(type, payload),
         inline: true,
       });
-    } else if (payload.comment) {
-      fields.push({
-        name: `Comment from ${payload.comment.user.displayName}`,
-        value: payload.comment.message,
-        inline: false,
-      });
-    } else if (payload.issue) {
-      fields.push(
-        {
-          name: 'Reported By',
-          value: payload.issue.createdBy.displayName,
-          inline: true,
-        },
-        {
-          name: 'Issue Type',
-          value: IssueTypeName[payload.issue.issueType],
-          inline: true,
-        },
-        {
-          name: 'Issue Status',
-          value:
-            payload.issue.status === IssueStatus.OPEN ? 'Open' : 'Resolved',
-          inline: true,
-        }
-      );
-      switch (type) {
-        case Notification.ISSUE_CREATED:
-        case Notification.ISSUE_REOPENED:
-          color = EmbedColors.RED;
-          break;
-        case Notification.ISSUE_COMMENT:
-          color = EmbedColors.ORANGE;
-          break;
-        case Notification.ISSUE_RESOLVED:
-          color = EmbedColors.GREEN;
-          break;
-      }
     }
-    for (const extra of payload.extra ?? []) {
-      fields.push({
-        name: extra.name,
-        value: extra.value,
-        inline: true,
-      });
-    }
-    const url = applicationUrl
-      ? payload.issue
-        ? `${applicationUrl}/issues/${payload.issue.id}`
-        : payload.media
-          ? `${applicationUrl}/${payload.media.mediaType}/${payload.media.tmdbId}`
-          : undefined
-      : undefined;
+for (const extra of payload.extra ?? []) {
+  fields.push({
+    name: extra.name,
+    value: extra.value,
+    inline: true,
+  });
+}
+
+const url = applicationUrl
+  ? payload.issue
+    ? `${applicationUrl}/issues/${payload.issue.id}`
+    : payload.media
+      ? `${applicationUrl}/${payload.media.mediaType}/${payload.media.tmdbId}`
+      : undefined
+  : undefined;
     return {
       title: payload.subject,
       url,
       description: payload.message,
       color,
       timestamp: new Date().toISOString(),
-      author: payload.event
-        ? {
-            name: payload.event,
-          }
-        : undefined,
-      fields,
       thumbnail: {
         url: payload.image,
       },
+      fields,
     };
   }
+
   public shouldSend(): boolean {
     const settings = this.getSettings();
-    if (settings.enabled && settings.options.webhookUrl) {
-      return true;
-    }
-    return false;
+    return settings.enabled && settings.options.webhookUrl ? true : false;
   }
+
   public async send(
     type: Notification,
     payload: NotificationPayload
   ): Promise<boolean> {
     const settings = this.getSettings();
-    if (
-      !payload.notifySystem ||
-      !hasNotificationType(type, settings.types ?? 0)
-    ) {
+
+    if (!payload.notifySystem || !hasNotificationType(type, settings.types ?? 0))
       return true;
-    }
+
     logger.debug('Sending Discord notification', {
       label: 'Notifications',
       type: Notification[type],
       subject: payload.subject,
     });
+
     const userMentions: string[] = [];
+
     try {
+      // Mentions
       if (settings.options.enableMentions) {
-        if (payload.notifyUser) {
-          if (
-            payload.notifyUser.settings?.hasNotificationType(
-              NotificationAgentKey.DISCORD,
-              type
-            ) &&
-            payload.notifyUser.settings.discordId
-          ) {
-            userMentions.push(`<@${payload.notifyUser.settings.discordId}>`);
-          }
+        if (payload.notifyUser?.settings?.discordId) {
+          userMentions.push(`<@${payload.notifyUser.settings.discordId}>`);
         }
+
         if (payload.notifyAdmin) {
-          const userRepository = getRepository(User);
-          const users = await userRepository.find();
+          const repo = getRepository(User);
+          const users = await repo.find();
+
           userMentions.push(
             ...users
               .filter(
-                (user) =>
-                  user.settings?.hasNotificationType(
-                    NotificationAgentKey.DISCORD,
-                    type
-                  ) &&
-                  user.settings.discordId &&
-                  shouldSendAdminNotification(type, user, payload)
+                (u) =>
+                  u.settings?.discordId &&
+                  shouldSendAdminNotification(type, u, payload)
               )
-              .map((user) => `<@${user.settings?.discordId}>`)
+              .map((u) => `<@${u.settings?.discordId}>`)
           );
         }
       }
+
       const embed = this.buildEmbed(type, payload);
+
       const statusLabel = this.getStatusLabel(type, payload);
-      const mediaTitle = payload.media?.mediaType === 'movie' ? payload.media.title : payload.media?.name;
-      const mediaYear = payload.media?.releaseDate ? `(${new Date(payload.media.releaseDate).getFullYear()})` : '';
+      const mediaTitle = this.getMediaTitle(payload);
+      const mediaYear = this.getMediaYear(payload);
+
       await axios.post(settings.options.webhookUrl, {
-        username: settings.options.botUsername
-          ? settings.options.botUsername
-          : getSettings().main.applicationTitle,
+        username:
+          settings.options.botUsername || getSettings().main.applicationTitle,
         avatar_url: settings.options.botAvatarUrl,
         embeds: [embed],
-        content: `**Status:** ${statusLabel}\n**Media:** ${mediaTitle} ${mediaYear}\n${userMentions.join(' ')}`,
+        content: `**${mediaTitle} ${mediaYear} — ${statusLabel}**\n${userMentions.join(' ')}`,
       } as DiscordWebhookPayload);
+
       return true;
     } catch (e) {
       logger.error('Error sending Discord notification', {
         label: 'Notifications',
-        type: Notification[type],
-        subject: payload.subject,
         errorMessage: e.message,
         response: e.response?.data,
       });
@@ -311,4 +302,5 @@ class DiscordAgent
     }
   }
 }
+
 export default DiscordAgent;
