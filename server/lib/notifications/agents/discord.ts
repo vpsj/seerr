@@ -13,6 +13,23 @@ import {
 import type { NotificationAgent, NotificationPayload } from './agent';
 import { BaseAgent } from './agent';
 
+/**
+ * FIX: Extend the Media payload to match Seerr develop structure.
+ */
+interface SeerrMedia {
+  mediaType: 'movie' | 'tv';
+  tmdbId: number;
+  mediaInfo?: {
+    title?: string;
+    originalTitle?: string;
+    releaseDate?: string;
+
+    name?: string;
+    originalName?: string;
+    firstAirDate?: string;
+  };
+}
+
 enum EmbedColors {
   DEFAULT = 0,
   AQUA = 1752220,
@@ -41,9 +58,6 @@ enum EmbedColors {
 
 interface DiscordImageEmbed {
   url?: string;
-  proxy_url?: string;
-  height?: number;
-  width?: number;
 }
 
 interface Field {
@@ -59,22 +73,9 @@ interface DiscordRichEmbed {
   url?: string;
   timestamp?: string;
   color?: number;
-  footer?: {
-    text: string;
-    icon_url?: string;
-    proxy_icon_url?: string;
-  };
-  image?: DiscordImageEmbed;
   thumbnail?: DiscordImageEmbed;
-  provider?: {
-    name?: string;
-    url?: string;
-  };
   author?: {
-    name?: string;
-    url?: string;
-    icon_url?: string;
-    proxy_icon_url?: string;
+    name: string;
   };
   fields?: Field[];
 }
@@ -85,11 +86,6 @@ interface DiscordWebhookPayload {
   avatar_url?: string;
   tts: boolean;
   content?: string;
-  allowed_mentions?: {
-    parse?: ('users' | 'roles' | 'everyone')[];
-    roles?: string[];
-    users?: string[];
-  };
 }
 
 class DiscordAgent
@@ -97,8 +93,7 @@ class DiscordAgent
   implements NotificationAgent
 {
   protected getSettings(): NotificationAgentDiscord {
-    if (this.settings) return this.settings;
-    return getSettings().notifications.agents.discord;
+    return this.settings ?? getSettings().notifications.agents.discord;
   }
 
   private getStatusLabel(type: Notification, payload: NotificationPayload): string {
@@ -133,44 +128,40 @@ class DiscordAgent
     return '';
   }
 
-  /** FIX — Correct media title extraction for Seerr develop */
+  /**
+   * FIX: Correctly extract title for movie + TV.
+   */
   private getMediaTitle(payload: NotificationPayload): string {
-    if (!payload.media) return 'Unknown';
+    const media = payload.media as unknown as SeerrMedia;
+    if (!media) return 'Unknown';
 
-    const info = (payload.media as any).mediaInfo;
+    const info = media.mediaInfo;
 
-    if (payload.media.mediaType === 'movie') {
-      return (
-        info?.title ||
-        info?.originalTitle ||
-        payload.subject ||
-        'Unknown'
-      );
+    if (media.mediaType === 'movie') {
+      return info?.title || info?.originalTitle || payload.subject || 'Unknown';
     }
 
-    // TV series
-    return (
-      info?.name ||
-      info?.originalName ||
-      payload.subject ||
-      'Unknown'
-    );
+    return info?.name || info?.originalName || payload.subject || 'Unknown';
   }
 
-  /** FIX — Correct year for movie + series */
+  /**
+   * FIX: Extract year from releaseDate / firstAirDate.
+   */
   private getMediaYear(payload: NotificationPayload): string {
-    const info = payload.media?.mediaInfo;
+    const media = payload.media as unknown as SeerrMedia;
+    const info = media?.mediaInfo;
     if (!info) return '';
 
     const date = info.releaseDate || info.firstAirDate;
     if (!date) return '';
 
-    const yr = new Date(date).getFullYear();
-    return isNaN(yr) ? '' : `(${yr})`;
+    const year = new Date(date).getFullYear();
+    return isNaN(year) ? '' : `(${year})`;
   }
 
   public buildEmbed(type: Notification, payload: NotificationPayload): DiscordRichEmbed {
     const { applicationUrl } = getSettings().main;
+
     let color = EmbedColors.DARK_PURPLE;
     const fields: Field[] = [];
 
@@ -225,52 +216,39 @@ const url = applicationUrl
       description: payload.message,
       color,
       timestamp: new Date().toISOString(),
-      thumbnail: {
-        url: payload.image,
-      },
+      thumbnail: { url: payload.image },
       fields,
     };
   }
 
   public shouldSend(): boolean {
     const settings = this.getSettings();
-    return settings.enabled && settings.options.webhookUrl ? true : false;
+    return settings.enabled && Boolean(settings.options.webhookUrl);
   }
 
-  public async send(
-    type: Notification,
-    payload: NotificationPayload
-  ): Promise<boolean> {
+  public async send(type: Notification, payload: NotificationPayload): Promise<boolean> {
     const settings = this.getSettings();
 
     if (!payload.notifySystem || !hasNotificationType(type, settings.types ?? 0))
       return true;
 
-    logger.debug('Sending Discord notification', {
-      label: 'Notifications',
-      type: Notification[type],
-      subject: payload.subject,
-    });
-
     const userMentions: string[] = [];
 
     try {
-      // Mentions
+      // User mentions
       if (settings.options.enableMentions) {
         if (payload.notifyUser?.settings?.discordId) {
           userMentions.push(`<@${payload.notifyUser.settings.discordId}>`);
         }
 
         if (payload.notifyAdmin) {
-          const repo = getRepository(User);
-          const users = await repo.find();
+          const userRepo = getRepository(User);
+          const users = await userRepo.find();
 
           userMentions.push(
             ...users
-              .filter(
-                (u) =>
-                  u.settings?.discordId &&
-                  shouldSendAdminNotification(type, u, payload)
+              .filter((u) =>
+                u.settings?.hasNotificationType(NotificationAgentKey.DISCORD, type)
               )
               .map((u) => `<@${u.settings?.discordId}>`)
           );
@@ -279,25 +257,25 @@ const url = applicationUrl
 
       const embed = this.buildEmbed(type, payload);
 
-      const statusLabel = this.getStatusLabel(type, payload);
-      const mediaTitle = this.getMediaTitle(payload);
-      const mediaYear = this.getMediaYear(payload);
+      const title = this.getMediaTitle(payload);
+      const year = this.getMediaYear(payload);
+      const status = this.getStatusLabel(type, payload);
 
       await axios.post(settings.options.webhookUrl, {
-        username:
-          settings.options.botUsername || getSettings().main.applicationTitle,
+        username: settings.options.botUsername ?? getSettings().main.applicationTitle,
         avatar_url: settings.options.botAvatarUrl,
         embeds: [embed],
-        content: `**${mediaTitle} ${mediaYear} — ${statusLabel}**\n${userMentions.join(' ')}`,
-      } as DiscordWebhookPayload);
+        content: `**${title} ${year} — ${status}**\n${userMentions.join(' ')}`,
+      });
 
       return true;
-    } catch (e) {
+    } catch (e: any) {
       logger.error('Error sending Discord notification', {
         label: 'Notifications',
         errorMessage: e.message,
         response: e.response?.data,
       });
+
       return false;
     }
   }
