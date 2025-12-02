@@ -12,7 +12,6 @@ import {
 } from '..';
 import type { NotificationAgent, NotificationPayload } from './agent';
 import { BaseAgent } from './agent';
-
 enum EmbedColors {
   DEFAULT = 0,
   AQUA = 1752220,
@@ -38,14 +37,12 @@ enum EmbedColors {
   LUMINOUS_VIVID_PINK = 16580705,
   DARK_VIVID_PINK = 12320855,
 }
-
 interface DiscordImageEmbed {
   url?: string;
   proxy_url?: string;
   height?: number;
   width?: number;
 }
-
 interface Field {
   name: string;
   value: string;
@@ -77,7 +74,6 @@ interface DiscordRichEmbed {
   };
   fields?: Field[];
 }
-
 interface DiscordWebhookPayload {
   embeds: DiscordRichEmbed[];
   username?: string;
@@ -90,7 +86,6 @@ interface DiscordWebhookPayload {
     users?: string[];
   };
 }
-
 class DiscordAgent
   extends BaseAgent<NotificationAgentDiscord>
   implements NotificationAgent
@@ -99,64 +94,74 @@ class DiscordAgent
     if (this.settings) {
       return this.settings;
     }
-
     const settings = getSettings();
-
     return settings.notifications.agents.discord;
   }
-
+  private getStatusLabel(
+    type: Notification,
+    payload: NotificationPayload
+  ): string {
+    if (payload.request) {
+      switch (type) {
+        case Notification.MEDIA_PENDING:
+          return 'Pending Approval';
+        case Notification.MEDIA_APPROVED:
+        case Notification.MEDIA_AUTO_APPROVED:
+          return 'Processing';
+        case Notification.MEDIA_AVAILABLE:
+          return 'Available';
+        case Notification.MEDIA_DECLINED:
+          return 'Declined';
+        case Notification.MEDIA_FAILED:
+          return 'Failed';
+      }
+    } else if (payload.issue) {
+      switch (type) {
+        case Notification.ISSUE_CREATED:
+        case Notification.ISSUE_REOPENED:
+          return 'Issue Reported';
+        case Notification.ISSUE_COMMENT:
+          return 'Issue Comment';
+        case Notification.ISSUE_RESOLVED:
+          return 'Issue Resolved';
+      }
+    }
+    return '';
+  }
   public buildEmbed(
     type: Notification,
     payload: NotificationPayload
   ): DiscordRichEmbed {
-    const settings = getSettings();
-    const { applicationUrl } = settings.main;
-    const { embedPoster } = settings.notifications.agents.discord;
-
-    const appUrl =
-      applicationUrl || `http://localhost:${process.env.port || 5055}`;
+    const { applicationUrl } = getSettings().main;
     let color = EmbedColors.DARK_PURPLE;
     const fields: Field[] = [];
-
     if (payload.request) {
       fields.push({
         name: 'Requested By',
         value: payload.request.requestedBy.displayName,
         inline: true,
       });
-
-      let status = '';
       switch (type) {
         case Notification.MEDIA_PENDING:
           color = EmbedColors.ORANGE;
-          status = `[Pending Approval](${appUrl}/requests)`;
           break;
         case Notification.MEDIA_APPROVED:
         case Notification.MEDIA_AUTO_APPROVED:
           color = EmbedColors.PURPLE;
-          status = 'Processing';
           break;
         case Notification.MEDIA_AVAILABLE:
           color = EmbedColors.GREEN;
-          status = 'Available';
           break;
         case Notification.MEDIA_DECLINED:
-          color = EmbedColors.RED;
-          status = 'Declined';
-          break;
         case Notification.MEDIA_FAILED:
           color = EmbedColors.RED;
-          status = 'Failed';
           break;
       }
-
-      if (status) {
-        fields.push({
-          name: 'Request Status',
-          value: status,
-          inline: true,
-        });
-      }
+      fields.push({
+        name: 'Request Status',
+        value: this.getStatusLabel(type, payload),
+        inline: true,
+      });
     } else if (payload.comment) {
       fields.push({
         name: `Comment from ${payload.comment.user.displayName}`,
@@ -182,7 +187,6 @@ class DiscordAgent
           inline: true,
         }
       );
-
       switch (type) {
         case Notification.ISSUE_CREATED:
         case Notification.ISSUE_REOPENED:
@@ -196,7 +200,6 @@ class DiscordAgent
           break;
       }
     }
-
     for (const extra of payload.extra ?? []) {
       fields.push({
         name: extra.name,
@@ -204,7 +207,6 @@ class DiscordAgent
         inline: true,
       });
     }
-
     const url = applicationUrl
       ? payload.issue
         ? `${applicationUrl}/issues/${payload.issue.id}`
@@ -212,7 +214,6 @@ class DiscordAgent
           ? `${applicationUrl}/${payload.media.mediaType}/${payload.media.tmdbId}`
           : undefined
       : undefined;
-
     return {
       title: payload.subject,
       url,
@@ -225,45 +226,35 @@ class DiscordAgent
           }
         : undefined,
       fields,
-      thumbnail: embedPoster
-        ? {
-            url: payload.image,
-          }
-        : undefined,
+      thumbnail: {
+        url: payload.image,
+      },
     };
   }
-
   public shouldSend(): boolean {
     const settings = this.getSettings();
-
     if (settings.enabled && settings.options.webhookUrl) {
       return true;
     }
-
     return false;
   }
-
   public async send(
     type: Notification,
     payload: NotificationPayload
   ): Promise<boolean> {
     const settings = this.getSettings();
-
     if (
       !payload.notifySystem ||
       !hasNotificationType(type, settings.types ?? 0)
     ) {
       return true;
     }
-
     logger.debug('Sending Discord notification', {
       label: 'Notifications',
       type: Notification[type],
       subject: payload.subject,
     });
-
     const userMentions: string[] = [];
-
     try {
       if (settings.options.enableMentions) {
         if (payload.notifyUser) {
@@ -277,11 +268,9 @@ class DiscordAgent
             userMentions.push(`<@${payload.notifyUser.settings.discordId}>`);
           }
         }
-
         if (payload.notifyAdmin) {
           const userRepository = getRepository(User);
           const users = await userRepository.find();
-
           userMentions.push(
             ...users
               .filter(
@@ -297,20 +286,18 @@ class DiscordAgent
           );
         }
       }
-
-      if (settings.options.webhookRoleId) {
-        userMentions.push(`<@&${settings.options.webhookRoleId}>`);
-      }
-
+      const embed = this.buildEmbed(type, payload);
+      const statusLabel = this.getStatusLabel(type, payload);
+      const mediaTitle = payload.media?.mediaType === 'movie' ? payload.media.title : payload.media?.name;
+      const mediaYear = payload.media?.releaseDate ? `(${new Date(payload.media.releaseDate).getFullYear()})` : '';
       await axios.post(settings.options.webhookUrl, {
         username: settings.options.botUsername
           ? settings.options.botUsername
           : getSettings().main.applicationTitle,
         avatar_url: settings.options.botAvatarUrl,
-        embeds: [this.buildEmbed(type, payload)],
-        content: userMentions.join(' '),
+        embeds: [embed],
+        content: `**Status:** ${statusLabel}\n**Media:** ${mediaTitle} ${mediaYear}\n${userMentions.join(' ')}`,
       } as DiscordWebhookPayload);
-
       return true;
     } catch (e) {
       logger.error('Error sending Discord notification', {
@@ -318,12 +305,10 @@ class DiscordAgent
         type: Notification[type],
         subject: payload.subject,
         errorMessage: e.message,
-        response: e?.response?.data,
+        response: e.response?.data,
       });
-
       return false;
     }
   }
 }
-
 export default DiscordAgent;
